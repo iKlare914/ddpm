@@ -170,7 +170,7 @@ class DDPMSampler:
         x_t = x_T
         with tqdm(range(self.num_timesteps - 1, -1, -1), desc="Sampling") as progress:
             for step in progress:
-                progress.set_postfix_str(f'Timesteps: {step + 1} / {self.num_timesteps}')
+                # progress.set_postfix_str(f'Timesteps: {step + 1} / {self.num_timesteps}')
                 with th.no_grad():
                     t = th.full((x_t.shape[0],), step, dtype=th.long, device=x_t.device)
                     x_t, _ = self.p_sample(
