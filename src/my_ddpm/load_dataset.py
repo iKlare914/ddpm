@@ -1,6 +1,43 @@
 from datasets import load_dataset
 from PIL import Image
+from torch.utils.data import DataLoader, Dataset
+import numpy as np
+import torch as th
 
-ds = load_dataset("uoft-cs/cifar10")
-train_set = ds["train"]
-test_set = ds["test"]
+class CifarDataset(Dataset):
+    def __init__(self, name, split, shuffle=True):
+        super().__init__()
+        self.data = load_dataset(name)[split]
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        image = self.data[index]['img']
+        label = self.data[index]['label']
+        return self.normalize_img(image), label
+
+    def normalize_img(self, img):
+        """
+        Convert uint8 data to [-1 ,1] by data / 127.5 - 1
+        """
+        img = th.from_numpy(np.array(img, dtype=np.float32))
+        img = img.permute(2, 0, 1).contiguous()
+        img = img / 127.5 - 1 # convert to [-1, 1]
+        return img
+
+def getCifarLoader(repo_name, split, batch_size=8, shuffle=True, num_workers=4):
+    dataset = CifarDataset(repo_name, split, shuffle)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+    )
+    return loader
+
+if __name__ == '__main__':
+    repo_name = "uoft-cs/cifar10"
+    loader = getCifarLoader(repo_name, 'train')
+    image, label = next(iter(loader))
+    print(image, label)

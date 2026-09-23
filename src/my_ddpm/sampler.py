@@ -2,8 +2,9 @@ import math
 
 import torch as th
 from tqdm.auto import tqdm
-
 from my_ddpm.logger import get_logger
+from typing import Literal
+import numpy as np
 
 logger = get_logger(__name__)
 
@@ -28,7 +29,7 @@ def make_beta_schedule(num_timesteps, beta_start=1e-4, beta_end=2e-2):
 
 
 class DDPMSampler:
-    def __init__(self, model, betas=None, d_type=th.float32, device=device, cond_fn=None, num_classes=None):
+    def __init__(self, model, betas=None, d_type=th.float32, device=device, loss_fn=th.nn.MSELoss(), cond_fn=None, num_classes=None):
         """
         Args:
             model: The diffusion model to sample from.
@@ -44,6 +45,7 @@ class DDPMSampler:
         self.device = th.device(device)
         if self.betas is not None:
             self._set_params(self.betas)
+        self.loss_fn = loss_fn
 
     def load_config_from_model(self, model):
         """Load the configuration from a pre-trained model. If model has betas, use them; otherwise, use the default betas."""
@@ -178,15 +180,24 @@ class DDPMSampler:
                     )
         return x_t
 
+    def get_loss(self, model, x_0, t):
+        """
+        Calculate loss for given samples
+        """
+        x_t, noise = self.q_sample(x_0, t)
+        pred_noise = model(x_t, t)
+        return self.loss_fn(pred_noise, noise)
+
 
 class DDIMSampler(DDPMSampler):
-    def __init__(self, model, spacing, randomness=0.0, betas=None, d_type=th.float32, device=device, cond_fn=None, num_classes=None):
-        super().__init__(model, betas, d_type, device, cond_fn, num_classes)
+    def __init__(self, model, spacing, randomness=0.0, betas=None, d_type=th.float32, device=device, loss_fn=th.nn.MSELoss() ,cond_fn=None, num_classes=None):
+        super().__init__(model, betas, d_type, device, loss_fn, cond_fn, num_classes)
         self.spacing = spacing
         randomness = float(randomness)
         if not math.isfinite(randomness):
             raise ValueError("randomness must be finite.")
         self.randomness = min(max(randomness, 0.0), 1.0)
+        self.loss_fn = loss_fn
         if self.randomness != randomness:
             logger.warning(
                 "Randomness value %s is out of bounds [0, 1]. Clamped to %s.",
@@ -264,3 +275,39 @@ class DDIMSampler(DDPMSampler):
         noise = th.randn_like(x_t) * std
         x_t_prev = mean + noise
         return mean, std, x_t_prev, pred_standard_gaussian_noise
+
+    def get_loss(self, model, x_0, t):
+        """
+        Calculate loss for given samples
+        """
+        x_t, noise = self.q_sample(x_0, t)
+        t = self.ddim_timesteps[t]
+        pred_noise = model(x_t, t)
+        return self.loss_fn(pred_noise, noise)
+
+class TimestepSampler():
+    def __init__(self, num_timestep, strategy: Literal['Uniform', 'Loss_weighted']):
+        if strategy not in ['Uniform', 'Loss_weighted']:
+            raise ValueError(f"Sampling strategy must be Uniform or Loss_weighted, but got {strategy}")
+        self.num_timesteps = num_timestep
+        self.strategy = strategy
+        if strategy == 'Uniform':
+            self.p = np.full((num_timestep,), 1.0 / num_timestep, dtype=np.float32)
+        self.timesteps = np.arange(num_timestep)
+
+    def sample(self, nums, device):
+        """
+        Sample nums timesteps from full timesteps
+        Args:
+            nums: number of timesteps needed
+            device: device that result sits on
+        Returns:
+            timesteps: Tensor [nums] sampled
+            weights: Tensor [nums] for weighted loss
+        """
+        if self.strategy == 'Uniform':
+            t = np.random.choice(self.timesteps, nums, p=self.p)
+            weights = np.ones((nums,), dtype=np.float32)
+        elif self.strategy == 'Loss_weighted':
+            raise NotImplementedError("Loss weighted sampling is not implemented")
+        return th.tensor(t, dtype=th.float32, device=device), th.tensor(weights, dtype=th.float32, device=device)
