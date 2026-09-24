@@ -8,6 +8,7 @@ import torch as th
 import torch.nn as nn
 from tqdm.auto import tqdm
 from torch.optim import AdamW
+from torch.nn.utils import clip_grad_norm_
 import wandb
 from pathlib import Path
 from time import time
@@ -76,6 +77,9 @@ class Trainer():
                         loss.backward()
                         total_loss += loss.item()
                         grad_norm = self.get_grad_norm()
+                        if grad_norm >= 1:
+                            logger.warning(f"Gradient norm({grad_norm}) > 1, clipped to 1")
+                            grad_norm = clip_grad_norm_(self.model.parameters(), max_norm=1.0, norm_type=2, error_if_nonfinite=True).item()
                         self.optimizer.step()
 
                         # log
