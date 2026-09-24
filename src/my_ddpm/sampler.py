@@ -157,7 +157,7 @@ class DDPMSampler:
         return x_t_prev, pred_standard_gaussian_noise
 
 
-    def sample(self, x_T, guided=False, y=None, guidance_scale=1.0):
+    def sample(self, x_T, guided=False, y=None, guidance_scale=1.0) -> th.Tensor:
         """
         Sample from the diffusion model starting from x_T and iteratively applying p_sample.
         Args:
@@ -309,4 +309,4 @@ class TimestepSampler():
             weights = np.ones((nums,), dtype=np.float32)
         elif self.strategy == 'Loss_weighted':
             raise NotImplementedError("Loss weighted sampling is not implemented")
-        return th.tensor(t, dtype=th.float32, device=device), th.tensor(weights, dtype=th.float32, device=device)
+        return th.tensor(t, dtype=th.long, device=device), th.tensor(weights, dtype=th.float32, device=device)

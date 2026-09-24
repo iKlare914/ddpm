@@ -1,0 +1,129 @@
+"""Train an unconditional DDPM on square CIFAR-10 images.
+
+Example:
+    python scripts/diffusion_train.py --image-size 32 --epochs 1 --device cuda
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import random
+
+import numpy as np
+import torch
+
+from my_ddpm.config import TrainerConfig
+from my_ddpm.load_dataset import getCifarLoader
+from my_ddpm.model import UNet
+from my_ddpm.sampler import DDPMSampler, TimestepSampler, make_beta_schedule
+from my_ddpm.trainer import Trainer
+
+
+def positive_int(value):
+    result = int(value)
+    if result <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return result
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--image-size', type=positive_int, required=True, help='Square input image side length; CIFAR-10 is 32')
+    parser.add_argument('--epochs', type=positive_int, default=100, help='Total target epochs, including epochs completed before resume')
+    parser.add_argument('--batch-size', type=positive_int, default=64)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--weight-decay', type=float, default=0.01)
+    parser.add_argument('--model-channels', type=positive_int, default=64)
+    parser.add_argument('--embedding-channels', type=positive_int, default=256)
+    parser.add_argument('--res-blocks', type=positive_int, default=2)
+    parser.add_argument('--channel-mult', type=positive_int, nargs='+', default=[1, 2, 4])
+    parser.add_argument('--attention-resolutions', type=positive_int, nargs='*', default=[16, 8], help='Actual feature-map side lengths in encoder AND decoder, not downsampling factors; empty disables their attention. Bottleneck retains attention.')
+    parser.add_argument('--num-heads', type=positive_int, default=4)
+    parser.add_argument('--timesteps', type=positive_int, default=1000)
+    parser.add_argument('--dataset', default='uoft-cs/cifar10', help='Hugging Face CIFAR-format dataset repository')
+    parser.add_argument('--num-workers', type=int, default=4)
+    parser.add_argument('--cache-dir', type=Path, default=Path('.cache/huggingface/datasets'))
+    parser.add_argument('--save-dir', type=Path, default=Path('checkpoints/cifar10'))
+    parser.add_argument('--save-interval-epoch', type=positive_int, default=10)
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--log-samples', action='store_true', help='Generate eight images whenever a checkpoint is saved')
+    parser.add_argument('--device', default='cuda', help='Torch device, e.g. cuda, cuda:0, or cpu; never silently falls back')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--wandb-mode', choices=['online', 'offline', 'disabled'], default='online')
+    args = parser.parse_args(argv)
+    max_scale = 2 ** (len(args.channel_mult) - 1)
+    if args.image_size % max_scale:
+        parser.error(f'--image-size must be divisible by {max_scale}')
+    resolutions = {args.image_size // 2 ** level for level in range(len(args.channel_mult))}
+    if not set(args.attention_resolutions).issubset(resolutions):
+        parser.error(f'--attention-resolutions must be selected from {sorted(resolutions)}')
+    if any(args.model_channels * mult % 32 for mult in args.channel_mult) or args.model_channels % 32:
+        parser.error('model channels at every level must be divisible by 32 (GroupNorm)')
+    if any(args.model_channels * mult % args.num_heads for mult in args.channel_mult):
+        parser.error('model channels at every level must be divisible by --num-heads')
+    if args.embedding_channels % 2:
+        parser.error('--embedding-channels must be even')
+    if args.num_workers < 0:
+        parser.error('--num-workers must be nonnegative')
+    if not np.isfinite(args.lr) or args.lr <= 0:
+        parser.error('--lr must be finite and positive')
+    if not 0 <= args.dropout <= 1:
+        parser.error('--dropout must be between 0 and 1')
+    if not np.isfinite(args.weight_decay) or args.weight_decay < 0:
+        parser.error('--weight-decay must be finite and nonnegative')
+    if args.timesteps <= 50:
+        parser.error('--timesteps must exceed 50 for this beta schedule')
+    if args.resume and not any(args.save_dir.glob('*_*_checkpoint.pt')):
+        parser.error('--resume requires a checkpoint in --save-dir')
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    device = torch.device(args.device)
+    if device.type == 'cuda' and not torch.cuda.is_available():
+        raise RuntimeError('CUDA is unavailable; training stopped without falling back to CPU.')
+    # Fail before downloading data if the requested device cannot execute a kernel.
+    torch.ones(1, device=device).add_(1)
+    if device.type == 'cuda':
+        torch.cuda.synchronize(device)
+        print(f'GPU: {torch.cuda.get_device_name(device)}', flush=True)
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    args.save_dir.mkdir(parents=True, exist_ok=True)
+    os.environ['WANDB_MODE'] = args.wandb_mode
+    os.environ['WANDB_DIR'] = str(args.save_dir.resolve())
+    print(json.dumps(vars(args), indent=2, default=str), flush=True)
+
+    config = TrainerConfig(
+        lr=args.lr, batch_size=args.batch_size, dropout=args.dropout,
+        weight_decay=args.weight_decay, epoches=args.epochs,
+        save_interval_epoch=args.save_interval_epoch, resume=args.resume,
+        log_samples=args.log_samples, save_dir=args.save_dir,
+        image_size=args.image_size,
+    )
+    model = UNet(
+        in_channel=3, out_channel=3, model_channel=args.model_channels,
+        embedding_channel=args.embedding_channels, resblock_num=args.res_blocks,
+        dropout=args.dropout, ch_mult=tuple(args.channel_mult),
+        attention_resolution=tuple(args.attention_resolutions),
+        num_heads=args.num_heads, image_size=args.image_size,
+    ).to(device)
+    sampler = DDPMSampler(model, betas=make_beta_schedule(args.timesteps), device=device)
+    loader = getCifarLoader(
+        args.dataset, 'train', batch_size=args.batch_size, num_workers=args.num_workers,
+        image_size=args.image_size, cache_dir=str(args.cache_dir),
+    )
+    print(f'Training on {len(loader.dataset)} images; {len(loader)} batches per epoch', flush=True)
+    Trainer(
+        model=model, data=loader, diffusion_sampler=sampler,
+        timestep_sampler=TimestepSampler(args.timesteps, 'Uniform'), config=config,
+    ).train()
+
+
+if __name__ == '__main__':
+    main()

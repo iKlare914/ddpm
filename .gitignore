@@ -12,3 +12,6 @@ wheels/
 
 # Jupyter Notebook
 test.ipynbt
+
+checkpoints/
+.*/

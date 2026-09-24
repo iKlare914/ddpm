@@ -200,12 +200,23 @@ class UNet(nn.Module):
             resblock_num,
             dropout=0,
             ch_mult = (1, 2, 3, 4),
-            attention_resolution = (2, 4, 8),
+            attention_resolution = (16, 8, 4),
             num_heads = 1,
             num_class = None,
-            dtype=th.float32
+            dtype=th.float32,
+            image_size=32
     ):
         super().__init__()
+        if not ch_mult:
+            raise ValueError("ch_mult must contain at least one level")
+        max_scale = 2 ** (len(ch_mult) - 1)
+        if image_size <= 0 or image_size % max_scale:
+            raise ValueError("image_size must be positive and divisible by the maximum downsampling factor")
+        valid_resolutions = {image_size // (2 ** level) for level in range(len(ch_mult))}
+        if not set(attention_resolution).issubset(valid_resolutions):
+            raise ValueError(f"attention_resolution must contain feature-map sizes from {sorted(valid_resolutions)}")
+        self.image_size = image_size
+        self.attention_resolution = tuple(attention_resolution)
         self.in_channel = in_channel
         self.model_channel = model_channel
         self.embedding_channel = embedding_channel
@@ -236,7 +247,7 @@ class UNet(nn.Module):
                 )
                 cur_ch = int(model_channel * mult)
                 layers.append(resblock)
-                if downsample_scale_factor in attention_resolution:
+                if image_size // downsample_scale_factor in attention_resolution:
                     attention_block = AttentionBlock(
                         cur_ch,
                         num_heads
@@ -293,7 +304,7 @@ class UNet(nn.Module):
                     )
                 ]
                 cur_ch = int(model_channel * mult)
-                if downsample_scale_factor in attention_resolution:
+                if image_size // downsample_scale_factor in attention_resolution:
                     layers.append(
                         AttentionBlock(
                             cur_ch,
@@ -310,7 +321,7 @@ class UNet(nn.Module):
                             is_upsample=True
                         )
                     )
-                    downsample_scale_factor /= 2
+                    downsample_scale_factor //= 2
                 self.decoder.append(TimeSequentialBlock(*layers))
 
         # Convert feature to result
