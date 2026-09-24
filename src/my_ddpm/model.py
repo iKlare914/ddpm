@@ -37,25 +37,29 @@ def position_embedding(x: th.Tensor, emb_dim: int):
     return emb
 
 class UpSampleBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, scale_factor=2):
+    def __init__(self, in_channels, out_channels, scale_factor=2, use_conv=False):
         super().__init__()
         self.scale_factor = scale_factor
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.use_conv = use_conv
 
     def forward(self, x):
         x = F.interpolate(x, scale_factor=self.scale_factor, mode='nearest')
-        x = self.conv(x)
+        if self.use_conv:
+            x = self.conv(x)
         return x
 
 class DownSampleBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, scale_factor=2):
+    def __init__(self, in_channels, out_channels, scale_factor=2, use_conv=False):
         super().__init__()
         self.scale_factor = scale_factor
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-
+        self.use_conv = use_conv
+        self.avg_pool = nn.AvgPool2d(kernel_size=2, stride=2) 
     def forward(self, x):
-        x = F.interpolate(x, scale_factor=1/self.scale_factor, mode='nearest')
-        x = self.conv(x)
+        x = self.avg_pool(x) 
+        if self.use_conv:
+            x = self.conv(x)
         return x
 
 class TimeEmbeddedBlock(nn.Module):
@@ -69,7 +73,7 @@ class ResidualBlock(TimeEmbeddedBlock):
     """
     Residual connection for UNet
     """
-    def __init__(self, in_channel, out_channel, emb_channel, dropout, is_upsample=False, is_downsample=False):
+    def __init__(self, in_channel, out_channel, emb_channel, dropout, is_upsample=False, is_downsample=False, use_conv=False):
         super().__init__()
         self.in_layers = nn.Sequential(
             nn.GroupNorm(32, in_channel),
@@ -77,11 +81,11 @@ class ResidualBlock(TimeEmbeddedBlock):
         )
         self.conv = nn.Conv2d(in_channel, out_channel, 3, padding=1)
         if is_upsample:
-            self.x_upd = UpSampleBlock(out_channel, out_channel, 2)
-            self.h_upd = UpSampleBlock(out_channel, out_channel, 2)
+            self.x_upd = UpSampleBlock(out_channel, out_channel, 2, use_conv)
+            self.h_upd = UpSampleBlock(out_channel, out_channel, 2, use_conv)
         elif is_downsample:
-            self.x_upd = DownSampleBlock(out_channel, out_channel, 2)
-            self.h_upd = DownSampleBlock(out_channel, out_channel, 2)
+            self.x_upd = DownSampleBlock(out_channel, out_channel, 2, use_conv)
+            self.h_upd = DownSampleBlock(out_channel, out_channel, 2, use_conv)
         else:
             self.x_upd = nn.Identity()
             self.h_upd = nn.Identity()
@@ -98,8 +102,13 @@ class ResidualBlock(TimeEmbeddedBlock):
             nn.SiLU(),
             nn.Linear(emb_channel, out_channel)
         )
+        if in_channel == out_channel:
+            self.skip_connection = nn.Identity()
+        elif use_conv:
+            self.skip_connection = nn.Conv2d(in_channel, out_channel, 3, padding=1)
+        else:
+            self.skip_connection = nn.Conv2d(in_channel, out_channel, 1)
 
-        self.skip_connection = nn.Identity() if in_channel == out_channel else nn.Conv2d(in_channel, out_channel, 3, padding=1)
     def forward(self, x: th.Tensor, emb: th.Tensor):
         """
         Args:
@@ -204,7 +213,8 @@ class UNet(nn.Module):
             num_heads = 1,
             num_class = None,
             dtype=th.float32,
-            image_size=32
+            image_size=32,
+            use_conv=False
     ):
         super().__init__()
         if not ch_mult:
@@ -226,6 +236,7 @@ class UNet(nn.Module):
         self.num_heads = num_heads
         self.num_class = num_class
         self.dtype = dtype
+        self.use_conv = use_conv
         downsample_scale_factor = 1
         if num_class:
             self.class_emb_layer = nn.Embedding(num_class, embedding_channel)
