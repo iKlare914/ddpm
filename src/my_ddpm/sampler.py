@@ -1,5 +1,4 @@
 import math
-
 import torch as th
 from tqdm.auto import tqdm
 from my_ddpm.logger import get_logger
