@@ -34,7 +34,7 @@ def display_image_uint8(img: th.Tensor):
     Returns:
         image: Tensor [B, C, H, W] with uint8 value
     """
-    img = img.cpu.detach()
+    img = img.detach().cpu()
     img = (img + 1) * 127.5
     img = img.clamp(0, 255).type(th.uint8)
     return img
