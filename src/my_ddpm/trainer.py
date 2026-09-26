@@ -1,6 +1,6 @@
 from my_ddpm.load_dataset import getCifarLoader, DataLoader
 from my_ddpm.logger import get_logger
-from my_ddpm.sampler import DDIMSampler, DDPMSampler, TimestepSampler
+from my_ddpm.sampler import DDIMSampler, DDPMSampler, TimestepSampler, display_image_uint8
 from my_ddpm.config import TrainerConfig
 from uuid import uuid4
 
@@ -102,7 +102,7 @@ class Trainer():
         samples = self.diffusion_sampler.sample(fixed_noise.clone())
 
         # Convert [-1, 1] data to [0, 255]
-        samples = ((samples + 1) * 127.5).clamp(0, 255).type(th.uint8).cpu()
+        samples = display_image_uint8(samples)
 
         run.log({
             "global_steps": self.global_steps,

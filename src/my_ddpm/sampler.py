@@ -26,6 +26,18 @@ def make_beta_schedule(num_timesteps, beta_start=1e-4, beta_end=2e-2):
         raise ValueError("Beta values must be in the range (0, 1).")
     return betas
 
+def display_image_uint8(img: th.Tensor):
+    """
+    Convert image from diffusion (range [-1, 1]) to normal uint8 image
+    Args:
+        img: Tensor [B, C ,H, W], value range from -1 to 1
+    Returns:
+        image: Tensor [B, C, H, W] with uint8 value
+    """
+    img = img.cpu.detach()
+    img = (img + 1) * 127.5
+    img = img.clamp(0, 255).type(th.uint8)
+    return img
 
 class DDPMSampler:
     def __init__(self, model, betas=None, d_type=th.float32, device=device, loss_fn=th.nn.MSELoss(), cond_fn=None, num_classes=None):
